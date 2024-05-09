@@ -1,0 +1,123 @@
+services:
+  wireguard:
+    container_name: wireguard
+    image: masipcat/wireguard-go:latest
+    cap_add:
+      - NET_ADMIN
+    volumes:
+        - /dev/net/tun:/dev/net/tun
+        - ./wireguard:/etc/wireguard
+    environment:
+        - WG_COLOR_MODE=always
+        - LOG_LEVEL=info
+    network_mode: "host"
+    restart: always
+    logging:
+      driver: syslog
+      options:
+        syslog-address: udp://syslog-ng:5514
+
+  zbx-proxy:
+    container_name: zabbix-proxy
+    image: zabbix/zabbix-proxy-sqlite3:alpine-6.4.12
+    restart: unless-stopped
+    depends_on: 
+      - wireguard
+    ports:
+      - 10051:10051
+    environment:
+      ZBX_PROXYMODE: 0
+      ZBX_HOSTNAME: proxy-name
+      ZBX_SERVER_HOST: 127.0.0.1
+      ZBX_ENABLEREMOTECOMMANDS: 1
+      ZBX_LOGREMOTECOMMANDS: 1
+    logging:
+      driver: syslog
+      options:
+        syslog-address: udp://syslog-ng:5514
+    networks:
+      monitoring_net:
+        aliases:
+          - zbx-proxy
+
+  zbx-agent:
+    container_name: zabbix-agent
+    image: zabbix/zabbix-agent2:alpine-6.4.12
+    stop_grace_period: 5s
+    restart: unless-stopped
+    user: "zabbix:zabbix"
+    depends_on: 
+      - zbx-proxy
+    ports:
+      - 10050:10050
+    group_add:
+      - 000 # docker group id
+    privileged: true
+    pid: "host"
+    environment:
+      ZBX_HOSTNAME: zabbix-proxy
+      ZBX_SERVER: zbx-proxy
+      ZBX_ACTIVE_ALLOW: 0
+      ZBX_ENABLEPERSISTENTBUFFER: 0
+      ZBX_PERSISTENTBUFFERPERIOD: 1h
+      ZBX_ENABLEREMOTECOMMANDS: 1
+      ZBX_LOGREMOTECOMMANDS: 1
+      ZBX_REFRESHACTIVECHECKS: 120
+      ZBX_BUFFERSEND: 5
+      ZBX_BUFFERSIZE: 100
+      ZBX_LISTENPORT: 10050
+      ZBX_UNSAFEUSERPARAMETERS: 0
+      ZBX_TLSCONNECT: unencrypted
+      ZBX_TLSACCEPT: unencrypted
+    volumes:
+      - <path_to_docker_run>:/var/run/docker.sock
+    logging:
+      driver: syslog
+      options:
+        syslog-address: udp://syslog-ng:5514
+    networks:
+      monitoring_net:
+        aliases:
+          - zbx-agent
+
+  syslog-ng:
+    image: lscr.io/linuxserver/syslog-ng:latest
+    container_name: syslog
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+    ports:
+      - 514:5514/udp
+    volumes:
+      - ./config:/config
+    logging:
+      driver: syslog
+      options:
+        syslog-address: udp://syslog-ng:5514
+    networks:
+      monitoring_net:
+        aliases:
+          - syslog-ng
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    restart: unless-stopped
+    depends_on:
+      - syslog-ng
+    volumes:
+      - ./config/promtail-config.yaml:/etc/promtail/promtail-config.yaml
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    logging:
+      driver: syslog
+      options:
+        syslog-address: udp://syslog-ng:5514
+    networks:
+      monitoring_net:
+        aliases:
+          - promtail
+
+networks:
+  monitoring_net:
+    driver: bridge
